@@ -223,16 +223,21 @@ load (const char *file_name, void (**eip) (void), void **esp)
   process_activate ();
 
 	// 여기에 filename Parsing 코드가 들어가야 할듯.
-	char **argv;
+	struct list argv;
 	int argc;
-	arg_parse (file_name, argv, &argc);
+	if ( !arg_parse (file_name, &argv, &argc) )
+		return (success = false);
 
+	// 파일명 추출
+	struct parameter *new_name;
+	new_name = list_entry(list_back(&argv), struct parameter, elem); 
+	// pop하는 것이 아님을 유의 (argv에서 파일명은 삭제되지 않는다.
 
   /* Open executable file. */
-  file = filesys_open (argv[0]);
+  file = filesys_open (new_name->str);
   if (file == NULL) 
     {
-      printf ("load: %s: open failed\n", argv[0]);
+      printf ("load: %s: open failed\n", new_name->str);
       goto done; 
     }
 
@@ -245,7 +250,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
       || ehdr.e_phentsize != sizeof (struct Elf32_Phdr)
       || ehdr.e_phnum > 1024) 
     {
-      printf ("load: %s: error loading executable\n", argv[0]);
+      printf ("load: %s: error loading executable\n", new_name->str);
       goto done; 
     }
 
@@ -313,6 +318,9 @@ load (const char *file_name, void (**eip) (void), void **esp)
     goto done;
 
 	//여기에 args pushing이 들어가야할듯
+	*esp = arg_push(&argv, argc);
+	hex_dump ((int)(*esp), *esp, (size_t)100, true);  //TODO: 제출전 지울것!
+
 
   /* Start address. */
   *eip = (void (*) (void)) ehdr.e_entry;
@@ -481,30 +489,26 @@ install_page (void *upage, void *kpage, bool writable)
 	 기본적으로 argv[]는 길이 10으로 할당되며, 만약 토큰화 도중 argv[] 길이가 초과된다면
 	 길이를 10 늘려 realloc한다.
 */
-bool arg_parse (const char *file_name_, char **argv, int *argc)
+bool arg_parse (const char *file_name_, struct list *argv, int *argc)
 {
 	char *file_name, *token, *save_ptr;
+	struct parameter *param;
+
+	list_init(argv);
 	
 	// file_name_을 file_name으로 복사
-	if ( (file_name = (char *) malloc(sizeof(char) * strlen(file_name_))) == NULL )
+	if ( (file_name = (char *) malloc(sizeof(char) * (strlen(file_name_)+1))) == NULL )
 		return false;
-	strlcpy(file_name, file_name_, strlen(file_name_) + 1);
+	strlcpy(file_name, file_name_, strlen(file_name_)+1);
 
 	// 토큰화하기
 	for (token = strtok_r(file_name, " ", &save_ptr) ; token != NULL ;
 			 token = strtok_r(NULL, " ", &save_ptr))
 	{
-		if ( *argc == 0 )
-			argv = (char **) malloc (sizeof(char*) * 10);
-		else if ( *argc % 10 == 0)
-			argv = (char **) realloc (argv, sizeof(char*) * 10);
-
-		if (argv == NULL)
-			return false;
-
-		if ( (*(argv + *argc) = (char *) malloc(sizeof(char) * strlen(token))) == NULL)
-			return false;
-		strlcpy(*(argv + *argc), token, strlen(token) + 1);
+		param = (struct parameter*) malloc(sizeof(struct parameter));
+		param->str = (char *) malloc(sizeof(char) * (strlen(token)+1));
+		strlcpy(param->str, token, strlen(token)+1);
+		list_push_front(argv, &(param->elem));  //right-to-left calling convention을 위해 push_front
 		(*argc)++;
 	}
 
@@ -512,5 +516,89 @@ bool arg_parse (const char *file_name_, char **argv, int *argc)
 	return true;
 }
 
+void *arg_push (struct list *argv, const int argc)
+{
+	/* 이 함수 내에서만 사용할 stack pointer
+		 user stack은 PHYS_BASE에서 시작하므로 아래와 같이 지정
+		 */
+	char *sp = (char *) PHYS_BASE;
+	int len;
+	struct list argv_addr;      //argv[]들의 주소를 저장할 리스트
+	struct parameter *param;	  //param과 addr는 list_entry의 리턴값을 저장하기 위함
+	struct argaddress *addr;		
 
-	
+	list_init(&argv_addr);
+	sp--;
+
+	while ( !list_empty(argv) )
+	{
+		param = list_entry( list_pop_front(argv), struct parameter, elem );
+		len = strnlen(param->str, 128);  //인자의 길이를 128bytes로 제한
+		
+		// 인자를 push
+		for ( ; len >= 0 ; len-- ) {
+			asm ("movb %1, %0; 1:"
+						: "=m" (*sp)
+						: "r" (param->str[len]));
+
+			if (len == 0) {
+				addr = (struct argaddress *) malloc(sizeof(struct argaddress));
+				addr->arg = (char *)sp;
+				list_push_back(&argv_addr, &(addr->elem));
+			}
+			sp--;
+		}
+
+		free(param);
+	}
+
+
+	// word align 설정
+	uint8_t x = 0;
+	while ( ((uint32_t)sp % 4) != 0 )		
+	{
+		sp--;
+		asm ("movb %1, %0; 1:"
+					: "=m" (*sp)
+					: "r" (x));
+	}
+
+	// NULL push
+	sp -= 4;
+	uint32_t n = 0;
+	asm ("movl %1, %0; 1:"
+				: "=m" (*sp)
+				: "r" (n));
+
+	// 인자들의 주소 push
+	while ( !list_empty(&argv_addr) )
+	{
+		sp -= 4;
+		addr = list_entry( list_pop_front(&argv_addr), struct argaddress, elem);
+		asm ("movl %1, %0; 1:"
+					: "=m" (*sp)
+					: "r" (addr->arg));
+		free(addr);
+	}
+
+	// 1st arg (argv[1])의 주소를 push
+	char *temp_sp = (char *)sp;
+	sp -= 4;
+	asm ("movl %1, %0; 1:"
+				: "=m" (*sp)
+				: "r" (temp_sp));
+
+	// 인자의 개수 push
+	sp -= 4;
+	asm ("movl %1, %0; 1:"
+				: "=m" (*sp)
+				: "r" (argc));
+
+	// return address push
+	sp -= 4;
+	asm ("movl %1, %0; 1:"
+				: "=m" (*sp)
+				: "r" (n));  // n == 0
+
+	return sp;
+}

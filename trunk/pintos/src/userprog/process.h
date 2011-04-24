@@ -10,7 +10,18 @@ void process_activate (void);
 
 
 // Project3를 위한 함수
-bool arg_parse (const char *file_name_, char **argv, int *argc);
+struct parameter {
+	char *str;
+	struct list_elem elem;
+};
+
+struct argaddress {
+	char *arg;
+	struct list_elem elem;
+};
+
+bool arg_parse (const char *file_name_, struct list *argv, int *argc);
+void *arg_push (struct list *argv, const int argc);
 
 
 #endif /* userprog/process.h  */
