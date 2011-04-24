@@ -313,6 +313,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
     goto done;
 
 	//여기에 args pushing이 들어가야할듯
+
   /* Start address. */
   *eip = (void (*) (void)) ehdr.e_entry;
 
