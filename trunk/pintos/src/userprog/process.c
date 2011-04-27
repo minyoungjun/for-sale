@@ -38,9 +38,10 @@ process_execute (const char *file_name)
   if (fn_copy == NULL)
     return TID_ERROR;
   strlcpy (fn_copy, file_name, PGSIZE);
-
+	
   /* Create a new thread to execute FILE_NAME. */
   tid = thread_create (file_name, PRI_DEFAULT, start_process, fn_copy);
+	//TODO: tid를 child로 현재 스레드의 childs list에 추가하기
   if (tid == TID_ERROR)
     palloc_free_page (fn_copy); 
   return tid;
@@ -319,7 +320,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
 
 	//여기에 args pushing이 들어가야할듯
 	*esp = arg_push(&argv, argc);
-	hex_dump ((int)(*esp), *esp, (size_t)100, true);  //TODO: 제출전 지울것!
+	//hex_dump ((int)(*esp), *esp, (size_t)100, true);
 
 
   /* Start address. */
@@ -332,7 +333,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
   file_close (file);
   return success;
 }
-
+
 /* load() helpers. */
 
 static bool install_page (void *upage, void *kpage, bool writable);
@@ -497,7 +498,7 @@ bool arg_parse (const char *file_name_, struct list *argv, int *argc)
 	list_init(argv);
 	
 	// file_name_을 file_name으로 복사
-	if ( (file_name = (char *) malloc(sizeof(char) * (strlen(file_name_)+1))) == NULL )
+	if ( (file_name = (char *) malloc(sizeof(char) * (strlen(file_name_)))) == NULL )
 		return false;
 	strlcpy(file_name, file_name_, strlen(file_name_)+1);
 
@@ -506,7 +507,7 @@ bool arg_parse (const char *file_name_, struct list *argv, int *argc)
 			 token = strtok_r(NULL, " ", &save_ptr))
 	{
 		param = (struct parameter*) malloc(sizeof(struct parameter));
-		param->str = (char *) malloc(sizeof(char) * (strlen(token)+1));
+		param->str = (char *) malloc(sizeof(char) * (strlen(token)));
 		strlcpy(param->str, token, strlen(token)+1);
 		list_push_front(argv, &(param->elem));  //right-to-left calling convention을 위해 push_front
 		(*argc)++;
