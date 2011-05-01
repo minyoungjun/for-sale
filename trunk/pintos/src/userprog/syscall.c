@@ -114,6 +114,7 @@ static bool check_buf_size(const void *buf, const unsigned size)
 	}
 }
 
+/* esp가 기리키는 위치의 값을 추출한다. */
 static uint32_t extract_arg(const uint32_t *esp)
 {
 	uint32_t value;
@@ -168,5 +169,83 @@ static int write(uint32_t *esp)
 
 }
 
+static bool create(uint32_t *esp)
+{
+	char *filename = (char *)extract_arg(++esp);
+	check_phys_base(filename);
+	check_buf_size(filename, sizeof(filename));
+
+	unsigned size = (unsigned)extract_arg(++esp);
+	
+	/* filesys_create()는 해당 파일에 대한 inode를 생성하고
+		 현 directory에 inode를 추가한다. */
+	return filesys_create(filename, size);
+}
+
+/* 한 thread가 한 file을 여러번 open할 수도 있다.
+		 그러나 각 open된 파일은 별도의 fd를 갖도록 해야한다.
+		 같은 file이라도 fd가 각각 다르므로 독립적으로 취급된다.
+		 즉, 이미 열려있는 파일인지 체크할 필요가 없다. */
+static int open(uint32_t *esp)
+{
+	char *filename = (char *)extract_arg(++esp);
+	check_phys_base(filename);
+	check_buf_size(filename, sizeof(filename));
+
+	struct file *file = filesys_open(filename);
+	if (file == NULL)
+		return -1;
+
+	// 현 스레드의 Open File List에 추가
+	struct thread *cur_thread = thread_current();
+	struct open_file *of = malloc(sizeof(struct open_file));
+	of->fd = cur_thread->next_fd++;
+	of->file = file;
+	list_push_front(&cur_thread->open_files, &of->elem);
+
+	return of->fd;
+}
+
+static bool remove(uint32_t *esp)
+{
+	char *filename = (char *)extract_arg(++esp);
+	check_phys_base(filename);
+	check_buf_size(filename, sizeof(filename));
+
+	return filesys_remove(filename);
+}
+
+static int filesize(uint32_t *esp)
+{
+	int fd = (int)extract_arg(++esp);
+	if (fd == 0 || fd == 1)
+		thread_exit();
+
+	struct file *file = find_open_file (thread_current(), fd);
+	if (file == NULL)
+		return -1;
+
+	return (int)file_length(file);
+}
+
+
+//cur_thread의 open_file_list에서 fd 값을 가지는 파일을 찾아준다.
+struct file *find_open_file (struct thread *cur_thread, const int fd)
+{
+	struct list_elem *cur;
+	int cnt = 0;
+	int num_open_files = (int)list_size(&cur_thread->open_files);
+
+	for (cur = list_begin(&cur_thread->open_files) ; cnt < num_open_files ;
+			 cur = list_next(cur))
+	{
+		cnt++;
+		struct open_file *of = list_entry(cur, struct open_file, elem);
+		if (fd == of->fd)
+			return of->file;
+	}
+
+	return NULL;
+}
 
 

@@ -509,6 +509,10 @@ init_thread (struct thread *t, const char *name, int priority)
   t->timeslice = priority + 5;  /* timeslice 초기화 */
   t->magic = THREAD_MAGIC;
   list_push_back (&all_list, &t->allelem);
+
+	//Open File List 초기화
+	list_init (&t->open_files);
+	t->next_fd = 2;		// fd=0은 STDIN_FILEN, fd=1은 STDOUT_FILENO으로 예약되어있으므로 open file의 fd는 2에서 시작
 }
 
 /* Allocates a SIZE-byte frame at the top of thread T's stack and
