@@ -103,7 +103,16 @@ struct thread
     unsigned magic;                     /* Detects stack overflow. */
 
 		int exit_status;
+		struct list open_files;             /* Open File들의 리스트 : struct open_file이 들어감 */
+		int next_fd;
 	};
+
+struct open_file
+{
+	int fd;
+	struct file *file;
+	struct list_elem elem;
+};
 
 /* If false (default), use round-robin scheduler.
    If true, use multi-level feedback queue scheduler.
