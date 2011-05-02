@@ -6,6 +6,8 @@
 #include "filesys/filesys.h"
 #include "filesys/file.h"
 #include "threads/vaddr.h"
+#include "threads/malloc.h"
+#include "devices/input.h"
 
 /* This is a skeleton system call handler */
 
@@ -22,7 +24,15 @@ static uint32_t extract_arg(const uint32_t *esp);
 
 // System Call 구현한 것들
 static void exit(uint32_t *esp);
+static int read(uint32_t *esp);
 static int write(uint32_t *esp);
+static bool create(uint32_t *esp);
+static int open(uint32_t *esp);
+static bool remove(uint32_t *esp);
+static int filesize(uint32_t *esp);
+static void close(uint32_t *esp);
+static struct file *find_open_file (struct thread *cur_thread, const int fd);
+static bool remove_open_file (struct thread *cur_thread, const int fd);
 
 
 void
@@ -44,12 +54,29 @@ syscall_handler (struct intr_frame *f UNUSED)
 		case SYS_EXIT:
 			exit(esp);
 			break;
+		case SYS_READ:
+			f->eax = read(esp);
+			break;
 		case SYS_WRITE:
 			f->eax = write(esp);
 			break;
-
+		case SYS_CREATE:
+			f->eax = create(esp);
+			break;
+		case SYS_REMOVE:
+			f->eax = remove(esp);
+			break;
+		case SYS_OPEN:
+			f->eax = open(esp);
+			break;
+		case SYS_FILESIZE:
+			f->eax = filesize(esp);
+			break;
+		case SYS_CLOSE:
+			close(esp);
+			break;
 		default:
-			printf("system call!\n");
+			printf("system call! : syscall num = %d\n", sys_num);
 			thread_exit();
 	}
 }
@@ -137,12 +164,45 @@ static void exit(uint32_t *esp)
 	thread_exit();
 }
 
+static int read(uint32_t *esp)
+{
+	int fd = (int)extract_arg(++esp);
+	if (fd == 1)  //stdout을 read할 수는 없으므로 -1 리턴
+		return -1;
+	
+	void *buf = (void *)extract_arg(++esp);
+	check_phys_base(buf);
+
+	unsigned size = (unsigned)extract_arg(++esp);
+	check_buf_size(buf, size);
+
+	if (fd == 0) { //stdin을 read하는 경우
+		unsigned len = 0;
+		while (len < size) {
+			*(uint8_t *)buf = input_getc();
+			buf = (uint8_t *)buf + 1; //buf를 증가시킬땐 byte(8bit) 단위로 증가
+			len++;
+		}
+		return len;
+	}
+	else
+	{
+		struct file *file = find_open_file(thread_current(), fd);
+		if (file == NULL)
+			return -1;
+
+		return (int)file_read(file, buf, size);
+	}
+
+	return -1;
+}
+
 static int write(uint32_t *esp)
 {
 
 	int fd = (int)extract_arg(++esp);
-	if (fd == 0)
-		return 0;
+	if (fd == 0) //stdin에 write할 수는 없으므로 -1 리턴
+		return -1;
 
 	void *buf = (void *)extract_arg(++esp);
 	check_phys_base(buf);
@@ -155,17 +215,15 @@ static int write(uint32_t *esp)
 		return (int)size;
 	}
 	else {  //file에 write하는 경우
-		/*
-		struct file* target_file = find_file(fd, &thread_current()->open_files);
+		struct file *file = find_open_file(thread_current(), fd);
 
-		if (target_file != NULL) {
-			int written_len = file_write(target_file, buf, size);
-			return written_len;
-		}
-		*/
+		if (file == NULL)
+			return -1;
+		
+		return file_write(file, buf, size);
 	}
 
-	return 0;
+	return -1;
 
 }
 
@@ -228,24 +286,55 @@ static int filesize(uint32_t *esp)
 	return (int)file_length(file);
 }
 
+static void close(uint32_t *esp)
+{
+	int fd = (int)extract_arg(++esp);
+	if (fd == 0 || fd == 1)
+		thread_exit();
 
-//cur_thread의 open_file_list에서 fd 값을 가지는 파일을 찾아준다.
-struct file *find_open_file (struct thread *cur_thread, const int fd)
+	struct file *file = find_open_file (thread_current(), fd);
+	if (file == NULL)
+		printf("That file isn't opened!\n");
+
+	file_close(file);
+	if ( !remove_open_file(thread_current(), fd) )
+		printf("Fail to remove a file in Open-File-List!\n");
+}
+
+/* cur_thread의 open_file_list에서 fd 값을 가지는 파일을 찾아준다. */
+static struct file *find_open_file (struct thread *cur_thread, const int fd)
 {
 	struct list_elem *cur;
-	int cnt = 0;
-	int num_open_files = (int)list_size(&cur_thread->open_files);
+	struct list *open_files = &cur_thread->open_files; 
 
-	for (cur = list_begin(&cur_thread->open_files) ; cnt < num_open_files ;
+	for (cur = list_begin(open_files) ; cur != list_end(open_files) ;
 			 cur = list_next(cur))
 	{
-		cnt++;
 		struct open_file *of = list_entry(cur, struct open_file, elem);
-		if (fd == of->fd)
+		if (fd == of->fd) {
 			return of->file;
+		}
 	}
 
 	return NULL;
 }
 
+/* cur_thread의 open_file_list에서 fd에 해당하는 파일을 제거한다. */
+static bool remove_open_file (struct thread *cur_thread, const int fd)
+{
+	struct list_elem *cur;
+	struct list *open_files = &cur_thread->open_files;
 
+	for (cur = list_begin(open_files) ; cur != list_end(open_files) ;
+			 cur = list_next(cur))
+	{
+		struct open_file *of = list_entry(cur, struct open_file, elem);
+		if (fd == of->fd) {
+			list_remove(cur);
+			free(of);
+			return true;
+		}
+	}
+
+	return false;
+}
