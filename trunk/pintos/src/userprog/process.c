@@ -17,7 +17,9 @@
 #include "threads/palloc.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
-#include "threads/malloc.h" //malloc()을 쓰기위해 추가
+#include "threads/malloc.h"
+#include "threads/synch.h"
+#include "userprog/syscall.h"
 
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
@@ -41,7 +43,6 @@ process_execute (const char *file_name)
 	
   /* Create a new thread to execute FILE_NAME. */
   tid = thread_create (file_name, PRI_DEFAULT, start_process, fn_copy);
-	//TODO: tid를 child로 현재 스레드의 childs list에 추가하기
   if (tid == TID_ERROR)
     palloc_free_page (fn_copy); 
   return tid;
@@ -223,19 +224,22 @@ load (const char *file_name, void (**eip) (void), void **esp)
     goto done;
   process_activate ();
 
-	// 여기에 filename Parsing 코드가 들어가야 할듯.
+	// Argument Parsing 하기
 	struct list argv;
 	int argc;
 	if ( !arg_parse (file_name, &argv, &argc) )
 		return (success = false);
 
-	// 파일명 추출
+	/* 파일명 추출 : argv[]에서 파일명을 pop하는게 아니다.
+		 단순히 읽어올 뿐이다.*/
 	struct parameter *new_name;
 	new_name = list_entry(list_back(&argv), struct parameter, elem); 
-	// pop하는 것이 아님을 유의 (argv에서 파일명은 삭제되지 않는다.
 
   /* Open executable file. */
+	lock_acquire(&lock_syscall);
   file = filesys_open (new_name->str);
+	lock_release(&lock_syscall);
+
   if (file == NULL) 
     {
       printf ("load: %s: open failed\n", new_name->str);
@@ -318,8 +322,9 @@ load (const char *file_name, void (**eip) (void), void **esp)
   if (!setup_stack (esp))
     goto done;
 
-	//여기에 args pushing이 들어가야할듯
+	// Argument Pushing
 	*esp = arg_push(&argv, argc);
+	// 아래는 pushing이 제대로 이뤄졌는지를 확인하는 함수
 	//hex_dump ((int)(*esp), *esp, (size_t)100, true);
 
 
@@ -485,10 +490,9 @@ install_page (void *upage, void *kpage, bool writable)
 
 
 
-/* file_name_을 parsing한다. strtok_r()을 이용하면 원본 문자열(file_name_)이 손상되므로
+/* file_name_을 parsing한다. 
+	 strtok_r()을 이용하면 원본 문자열(file_name_)이 손상되므로 
 	 char* file_name에 복사하여 작업한다.
-	 기본적으로 argv[]는 길이 10으로 할당되며, 만약 토큰화 도중 argv[] 길이가 초과된다면
-	 길이를 10 늘려 realloc한다.
 */
 bool arg_parse (const char *file_name_, struct list *argv, int *argc)
 {
@@ -517,11 +521,12 @@ bool arg_parse (const char *file_name_, struct list *argv, int *argc)
 	return true;
 }
 
+
+/* 메모리에 인자를 push한다. */
 void *arg_push (struct list *argv, const int argc)
 {
-	/* 이 함수 내에서만 사용할 stack pointer
-		 user stack은 PHYS_BASE에서 시작하므로 아래와 같이 지정
-		 */
+	/* sp는 이 함수 내에서만 사용할 stack pointer
+		 user stack은 PHYS_BASE에서 시작하므로 아래와 같이 지정 */
 	char *sp = (char *) PHYS_BASE;
 	int len;
 	struct list argv_addr;      //argv[]들의 주소를 저장할 리스트

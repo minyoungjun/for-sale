@@ -8,6 +8,7 @@
 #include "threads/vaddr.h"
 #include "threads/malloc.h"
 #include "devices/input.h"
+#include "threads/synch.h"
 
 /* This is a skeleton system call handler */
 
@@ -18,8 +19,9 @@ static void syscall_handler (struct intr_frame *);
 static int get_user (const uint8_t *uaddr);
 static bool put_user (uint8_t *udst, uint8_t byte);
 static int get_user32 (const uint32_t *uaddr);
-static bool check_phys_base(const void *ptr);
+static bool ceck_phys_base(const void *ptr);
 static bool check_buf_size(const void *buf, const unsigned size);
+static bool check_buf_size_put(const void *buf, const unsigned size);
 static uint32_t extract_arg(const uint32_t *esp);
 
 // System Call 구현한 것들
@@ -28,7 +30,6 @@ static int read(uint32_t *esp);
 static int write(uint32_t *esp);
 static bool create(uint32_t *esp);
 static int open(uint32_t *esp);
-static bool remove(uint32_t *esp);
 static int filesize(uint32_t *esp);
 static void close(uint32_t *esp);
 static struct file *find_open_file (struct thread *cur_thread, const int fd);
@@ -38,6 +39,9 @@ static bool remove_open_file (struct thread *cur_thread, const int fd);
 void
 syscall_init (void) 
 {
+	lock_init(&lock_syscall);
+	lock_init(&lock_open_files);
+
   intr_register_int (0x30, 3, INTR_ON, syscall_handler, "syscall");
 }
 
@@ -62,9 +66,6 @@ syscall_handler (struct intr_frame *f UNUSED)
 			break;
 		case SYS_CREATE:
 			f->eax = create(esp);
-			break;
-		case SYS_REMOVE:
-			f->eax = remove(esp);
 			break;
 		case SYS_OPEN:
 			f->eax = open(esp);
@@ -102,7 +103,7 @@ put_user (uint8_t *udst, uint8_t byte)
 {
 	int error_code;
 	asm ("movl $1f, %0; movb %b2, %1; 1:"
-			: "=&a" (error_code), "=m" (*udst) : "r" (byte));
+			: "=&a" (error_code), "=m" (*udst) : "q" (byte));
 	return error_code != -1;
 }
 
@@ -141,6 +142,20 @@ static bool check_buf_size(const void *buf, const unsigned size)
 	}
 }
 
+/* write할 문자열이 user memory 영역에 있는지 검사한다. */
+static bool check_buf_size_put(const void *buf, const unsigned size)
+{
+	int i = 0;
+	uint8_t *cur;
+
+	for (cur = (uint8_t*)buf + i*PGSIZE ; cur < (uint8_t*)(buf + size-1)
+				; cur = (uint8_t*)buf + (++i)*PGSIZE)
+	{
+		if (put_user(cur, (uint8_t)0) == -1)  //segfault가 발생한 경우
+			thread_exit();
+	}
+}
+
 /* esp가 기리키는 위치의 값을 추출한다. */
 static uint32_t extract_arg(const uint32_t *esp)
 {
@@ -156,6 +171,7 @@ static uint32_t extract_arg(const uint32_t *esp)
 
 /************ System Call 구현 **************/
 
+/* child process를 고려하지 않고 간단하게 구현한 exit() */
 static void exit(uint32_t *esp)
 {
 	int status = (int)extract_arg(++esp);
@@ -174,7 +190,7 @@ static int read(uint32_t *esp)
 	check_phys_base(buf);
 
 	unsigned size = (unsigned)extract_arg(++esp);
-	check_buf_size(buf, size);
+	check_buf_size_put(buf, size);
 
 	if (fd == 0) { //stdin을 read하는 경우
 		unsigned len = 0;
@@ -188,10 +204,16 @@ static int read(uint32_t *esp)
 	else
 	{
 		struct file *file = find_open_file(thread_current(), fd);
+		
 		if (file == NULL)
 			return -1;
 
-		return (int)file_read(file, buf, size);
+		int read_cnt;
+		lock_acquire(&lock_syscall);
+		read_cnt = (int)file_read(file, buf, size);
+		lock_release(&lock_syscall);
+
+		return read_cnt;
 	}
 
 	return -1;
@@ -220,7 +242,11 @@ static int write(uint32_t *esp)
 		if (file == NULL)
 			return -1;
 		
-		return file_write(file, buf, size);
+		lock_acquire(&lock_syscall);
+		int write_cnt = file_write(file, buf, size);
+		lock_release(&lock_syscall);
+
+		return write_cnt;
 	}
 
 	return -1;
@@ -237,7 +263,11 @@ static bool create(uint32_t *esp)
 	
 	/* filesys_create()는 해당 파일에 대한 inode를 생성하고
 		 현 directory에 inode를 추가한다. */
-	return filesys_create(filename, size);
+	lock_acquire(&lock_syscall);
+	bool ret_value = filesys_create(filename, size);
+	lock_release(&lock_syscall);
+
+	return ret_value;
 }
 
 /* 한 thread가 한 file을 여러번 open할 수도 있다.
@@ -250,7 +280,9 @@ static int open(uint32_t *esp)
 	check_phys_base(filename);
 	check_buf_size(filename, sizeof(filename));
 
+	lock_acquire(&lock_syscall);
 	struct file *file = filesys_open(filename);
+	lock_release(&lock_syscall);
 	if (file == NULL)
 		return -1;
 
@@ -259,18 +291,12 @@ static int open(uint32_t *esp)
 	struct open_file *of = malloc(sizeof(struct open_file));
 	of->fd = cur_thread->next_fd++;
 	of->file = file;
+	
+	lock_acquire(&lock_open_files);
 	list_push_front(&cur_thread->open_files, &of->elem);
+	lock_release(&lock_open_files);
 
 	return of->fd;
-}
-
-static bool remove(uint32_t *esp)
-{
-	char *filename = (char *)extract_arg(++esp);
-	check_phys_base(filename);
-	check_buf_size(filename, sizeof(filename));
-
-	return filesys_remove(filename);
 }
 
 static int filesize(uint32_t *esp)
@@ -283,7 +309,11 @@ static int filesize(uint32_t *esp)
 	if (file == NULL)
 		return -1;
 
-	return (int)file_length(file);
+	lock_acquire(&lock_syscall);
+	int len = (int)file_length(file);
+	lock_release(&lock_syscall);
+
+	return len;
 }
 
 static void close(uint32_t *esp)
@@ -293,12 +323,19 @@ static void close(uint32_t *esp)
 		thread_exit();
 
 	struct file *file = find_open_file (thread_current(), fd);
-	if (file == NULL)
-		printf("That file isn't opened!\n");
+	if (file == NULL) {
+		printf("That file wasn't opened!\n");
+		thread_exit();
+	}
 
+	lock_acquire(&lock_syscall);
 	file_close(file);
-	if ( !remove_open_file(thread_current(), fd) )
+	lock_release(&lock_syscall);
+
+	if ( !remove_open_file(thread_current(), fd) ) {
 		printf("Fail to remove a file in Open-File-List!\n");
+		thread_exit();
+	}
 }
 
 /* cur_thread의 open_file_list에서 fd 값을 가지는 파일을 찾아준다. */
@@ -307,14 +344,17 @@ static struct file *find_open_file (struct thread *cur_thread, const int fd)
 	struct list_elem *cur;
 	struct list *open_files = &cur_thread->open_files; 
 
+	lock_acquire(&lock_open_files);
 	for (cur = list_begin(open_files) ; cur != list_end(open_files) ;
 			 cur = list_next(cur))
 	{
 		struct open_file *of = list_entry(cur, struct open_file, elem);
 		if (fd == of->fd) {
+			lock_release(&lock_open_files);
 			return of->file;
 		}
 	}
+	lock_release(&lock_open_files);
 
 	return NULL;
 }
@@ -325,6 +365,7 @@ static bool remove_open_file (struct thread *cur_thread, const int fd)
 	struct list_elem *cur;
 	struct list *open_files = &cur_thread->open_files;
 
+	lock_acquire(&lock_open_files);
 	for (cur = list_begin(open_files) ; cur != list_end(open_files) ;
 			 cur = list_next(cur))
 	{
@@ -332,9 +373,11 @@ static bool remove_open_file (struct thread *cur_thread, const int fd)
 		if (fd == of->fd) {
 			list_remove(cur);
 			free(of);
+			lock_release(&lock_open_files);
 			return true;
 		}
 	}
+	lock_release(&lock_open_files);
 
 	return false;
 }

@@ -513,6 +513,9 @@ init_thread (struct thread *t, const char *name, int priority)
 	//Open File List 초기화
 	list_init (&t->open_files);
 	t->next_fd = 2;		// fd=0은 STDIN_FILEN, fd=1은 STDOUT_FILENO으로 예약되어있으므로 open file의 fd는 2에서 시작
+	
+	//Lock List 초기화
+	list_init (&t->locks);
 }
 
 /* Allocates a SIZE-byte frame at the top of thread T's stack and

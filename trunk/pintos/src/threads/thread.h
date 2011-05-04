@@ -105,6 +105,8 @@ struct thread
 		int exit_status;
 		struct list open_files;             /* Open File들의 리스트 : struct open_file이 들어감 */
 		int next_fd;
+
+		struct list locks;									/* 이 스레드가 acquire하고 있는 locks */
 	};
 
 struct open_file
