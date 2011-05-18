@@ -4,6 +4,7 @@
 #include <debug.h>
 #include <list.h>
 #include <stdint.h>
+#include "threads/synch.h"
 
 /* States in a thread's life cycle. */
 enum thread_status
@@ -103,8 +104,16 @@ struct thread
     unsigned magic;                     /* Detects stack overflow. */
 
 		int exit_status;
+		bool exited_by_exit_call;			      /* 현 스레드가 user process이고 exit() syscall로 종료된 경우 */
+		bool is_userprog;										/* 이 스레드가 user program인지를 나타냄 */
 		struct list open_files;             /* Open File들의 리스트 : struct open_file이 들어감 */
 		int next_fd;
+
+		struct list childs;
+		struct thread *parent;
+
+		struct file *file;
+		struct lock lock;
 
 		struct list locks;									/* 이 스레드가 acquire하고 있는 locks */
 	};
@@ -113,6 +122,14 @@ struct open_file
 {
 	int fd;
 	struct file *file;
+	struct list_elem elem;
+};
+
+struct child_process
+{
+	tid_t pid_t;
+	int exit_status;
+	struct semaphore sema;
 	struct list_elem elem;
 };
 

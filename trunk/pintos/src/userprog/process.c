@@ -40,11 +40,43 @@ process_execute (const char *file_name)
   if (fn_copy == NULL)
     return TID_ERROR;
   strlcpy (fn_copy, file_name, PGSIZE);
-	
+
+	struct child_process *child = (struct child_process *)malloc(sizeof(struct child_process));
+	if (child == NULL) {
+		palloc_free_page(fn_copy);
+		thread_exit();
+	}
+	sema_init(&child->sema, 0);
+
+	struct exec_arg *args = (struct exec_arg *)malloc(sizeof(struct exec_arg));
+	if (args == NULL) {
+		palloc_free_page(fn_copy);
+		free(child);
+		thread_exit();
+	}
+	args->filename = fn_copy;
+	sema_init(&args->sema, 0);
+	args->success = false;
+
   /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create (file_name, PRI_DEFAULT, start_process, fn_copy);
-  if (tid == TID_ERROR)
-    palloc_free_page (fn_copy); 
+	lock_acquire(&thread_current()->lock);
+  tid = thread_create (file_name, PRI_DEFAULT, start_process, args);
+	child->pid_t = tid;
+	if (tid != TID_ERROR)
+		list_push_front(&thread_current()->childs, &child->elem);
+	lock_release(&thread_current()->lock);
+
+  if (tid == TID_ERROR) {
+    palloc_free_page (fn_copy);
+		free(child);
+		free(args);
+	} else {
+		sema_down(&args->sema);
+		if (!args->success)
+			tid = TID_ERROR;
+		free(args);
+	}
+
   return tid;
 }
 
@@ -53,9 +85,12 @@ process_execute (const char *file_name)
 static void
 start_process (void *file_name_)
 {
-  char *file_name = file_name_;
+	struct exec_arg *args = file_name_;
+  char *file_name = args->filename;
   struct intr_frame if_;
   bool success;
+
+	thread_current()->is_userprog = true;
 
   /* Initialize interrupt frame and load executable. */
   memset (&if_, 0, sizeof if_);
@@ -66,6 +101,8 @@ start_process (void *file_name_)
 
   /* If load failed, quit. */
   palloc_free_page (file_name);
+	args->success = success;
+	sema_up(&args->sema);
   if (!success) 
     thread_exit ();
 
@@ -89,9 +126,28 @@ start_process (void *file_name_)
    This function will be implemented in problem 2-2.  For now, it
    does nothing. */
 int
-process_wait (tid_t child_tid UNUSED) 
+process_wait (tid_t child_tid) 
 {
-  return -1;
+  struct thread *cur = thread_current();
+	struct child_process *child;
+	int ret;
+
+	lock_acquire(&cur->lock);
+	child = find_child(child_tid, cur);
+	lock_release(&cur->lock);
+
+	if (child == NULL)
+		return -1;
+
+	sema_down(&child->sema);
+
+	lock_acquire(&cur->lock);
+	list_remove(&child->elem);
+	lock_release(&cur->lock);
+
+	ret = child->exit_status;
+	free(child);
+	return ret;
 }
 
 /* Free the current process's resources. */
@@ -100,7 +156,40 @@ process_exit (void)
 {
   struct thread *cur = thread_current ();
   uint32_t *pd;
+	struct open_file *open_file;
+	struct child_process *child;
+	int ret;
 
+	//이 스레드의 모든 open file을 close
+	while (!list_empty(&cur->open_files)) {
+		open_file = list_entry(list_pop_front(&cur->open_files), struct open_file, elem);
+		file_close(open_file->fd);
+		free(open_file);
+	}
+
+	if (cur->parent != NULL) {
+		lock_acquire(&cur->parent->lock);
+		child = find_child(cur->tid, cur->parent);
+		lock_release(&cur->parent->lock);
+	}
+
+	if (cur->is_userprog) {
+		if (!cur->exited_by_exit_call)
+			child->exit_status = -1;
+		else {
+			ret = (cur->exit_status < 0) ? -1 : cur->exit_status;
+			child->exit_status = ret;
+		}
+	}
+/*
+	if (cur->file != NULL) {
+		lock_acquire(&lock_syscall);
+		file_allow_write(cur->file);
+		file_close(cur->file);
+		lock_release(&lock_syscall);
+		cur->file = NULL;
+	}
+*/
   /* Destroys the current process's page directory and switch back
      to the kernel-only page directory. */
   pd = cur->pagedir;
@@ -117,6 +206,9 @@ process_exit (void)
       pagedir_activate (NULL);
       pagedir_destroy (pd);
     }
+
+	if (child != NULL)
+		sema_up(&child->sema);
 }
 
 /* Sets up the CPU for running user code in the current
@@ -239,6 +331,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
 	lock_acquire(&lock_syscall);
   file = filesys_open (new_name->str);
 	lock_release(&lock_syscall);
+	t->file = file;
 
   if (file == NULL) 
     {
@@ -330,7 +423,11 @@ load (const char *file_name, void (**eip) (void), void **esp)
 
   /* Start address. */
   *eip = (void (*) (void)) ehdr.e_entry;
-
+/*
+	lock_acquire(&lock_syscall);
+	file_deny_write(file);
+	lock_release(&lock_syscall);
+*/
   success = true;
 
  done:
@@ -607,4 +704,17 @@ void *arg_push (struct list *argv, const int argc)
 				: "r" (n));  // n == 0
 
 	return sp;
+}
+
+struct child_process *find_child (tid_t pid, struct thread *t)
+{
+	struct list_elem *cur;
+	struct child_process *child;
+	
+	for (cur = list_begin(&t->childs) ; cur != list_end(&t->childs) ; cur = list_next(cur)) {
+		child = list_entry(cur, struct child_process, elem);
+		if (child->pid_t = pid)
+			return child;
+	}
+	return NULL;
 }

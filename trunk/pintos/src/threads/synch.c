@@ -31,7 +31,6 @@
 #include <string.h>
 #include "threads/interrupt.h"
 #include "threads/thread.h"
-#include "lib/kernel/bitmap.h"
 
 /* Initializes semaphore SEMA to VALUE.  A semaphore is a
    nonnegative integer along with two atomic operators for
@@ -48,8 +47,7 @@ sema_init (struct semaphore *sema, unsigned value)
   ASSERT (sema != NULL);
 
   sema->value = value;
-//  list_init (&sema->waiters);
-	prioarr_init(&sema->waiters);
+  list_init (&sema->waiters);
 }
 
 /* Down or "P" operation on a semaphore.  Waits for SEMA's value
@@ -70,8 +68,7 @@ sema_down (struct semaphore *sema)
   old_level = intr_disable ();
   while (sema->value == 0) 
     {
-      //list_push_back (&sema->waiters, &thread_current ()->elem);
-			prioarr_insert(&sema->waiters, thread_current());
+      list_push_back (&sema->waiters, &thread_current ()->elem);
       thread_block ();
     }
   sema->value--;
@@ -116,13 +113,9 @@ sema_up (struct semaphore *sema)
   ASSERT (sema != NULL);
 
   old_level = intr_disable ();
-/*  if (!list_empty (&sema->waiters)) 
+  if (!list_empty (&sema->waiters)) 
     thread_unblock (list_entry (list_pop_front (&sema->waiters),
                                 struct thread, elem));
-*/
-	if (!prioarr_empty(&sema->waiters))
-		thread_unblock (prioarr_remove(&sema->waiters));
-
   sema->value++;
   intr_set_level (old_level);
 }
@@ -203,8 +196,6 @@ lock_acquire (struct lock *lock)
   ASSERT (!intr_context ());
   ASSERT (!lock_held_by_current_thread (lock));
 
-	list_push_front(&thread_current()->locks, &lock->elem);
-
   sema_down (&lock->semaphore);
   lock->holder = thread_current ();
 }
@@ -225,7 +216,6 @@ lock_try_acquire (struct lock *lock)
 
   success = sema_try_down (&lock->semaphore);
   if (success)
-		list_push_front(&thread_current()->locks, &lock->elem);
     lock->holder = thread_current ();
   return success;
 }
@@ -241,7 +231,6 @@ lock_release (struct lock *lock)
   ASSERT (lock != NULL);
   ASSERT (lock_held_by_current_thread (lock));
 
-	list_remove(&lock->elem);
   lock->holder = NULL;
   sema_up (&lock->semaphore);
 }
@@ -264,10 +253,6 @@ struct semaphore_elem
     struct semaphore semaphore;         /* This semaphore. */
   };
 
-void prioarr_semaelem_insert (struct prio_array *, struct semaphore_elem *);
-struct semaphore_elem *prioarr_semaelem_remove (struct prio_array *);
-
-
 /* Initializes condition variable "COND".  A condition variable
    allows one piece of code to signal a condition and cooperating
    code to receive the signal and act upon it. */
@@ -276,8 +261,7 @@ cond_init (struct condition *cond)
 {
   ASSERT (cond != NULL);
 
-//  list_init (&cond->waiters);
-	prioarr_init (&cond->waiters);
+  list_init (&cond->waiters);
 }
 
 /* Atomically releases LOCK and waits for COND to be signaled by
@@ -311,8 +295,7 @@ cond_wait (struct condition *cond, struct lock *lock)
   ASSERT (lock_held_by_current_thread (lock));
   
   sema_init (&waiter.semaphore, 0);
-//  list_push_back (&cond->waiters, &waiter.elem);
-	prioarr_semaelem_insert (&cond->waiters, &waiter);
+  list_push_back (&cond->waiters, &waiter.elem);
   lock_release (lock);
   sema_down (&waiter.semaphore);
   lock_acquire (lock);
@@ -333,13 +316,9 @@ cond_signal (struct condition *cond, struct lock *lock UNUSED)
   ASSERT (!intr_context ());
   ASSERT (lock_held_by_current_thread (lock));
 
-/*  if (!list_empty (&cond->waiters)) 
+  if (!list_empty (&cond->waiters)) 
     sema_up (&list_entry (list_pop_front (&cond->waiters),
                           struct semaphore_elem, elem)->semaphore);
-*/
-
-	if (!prioarr_empty (&cond->waiters))
-		sema_up (&prioarr_semaelem_remove (&cond->waiters)->semaphore);
 }
 
 /* Wakes up all threads, if any, waiting on COND (protected by
@@ -353,37 +332,7 @@ cond_broadcast (struct condition *cond, struct lock *lock)
 {
   ASSERT (cond != NULL);
   ASSERT (lock != NULL);
-/*
+
   while (!list_empty (&cond->waiters))
     cond_signal (cond, lock);
-		*/
-  while (!prioarr_empty (&cond->waiters))
-    cond_signal (cond, lock);
-}
-/** thread.h의 priority array의 operation들을 semaphore_elem에 맞게 변형한 것들*/
-void prioarr_semaelem_insert (struct prio_array *p_arr, struct semaphore_elem *sema_elem)
-{
-	int priority = thread_current()->priority;
-
-	p_arr->num++;
-	bitmap_mark(p_arr->map, PRI_MAX - priority);
-	list_push_back (&p_arr->queue[priority], &sema_elem->elem);
-}
-
-struct semaphore_elem *prioarr_semaelem_remove (struct prio_array *p_arr)
-{
-	struct semaphore_elem *sema_elem;
-
-	ASSERT(p_arr->num != 0);
-
-	size_t first_bit = bitmap_scan(p_arr->map, 0, 1, true);
-	int highest_prio = PRI_MAX - first_bit;
-	sema_elem = list_entry(list_pop_front (&p_arr->queue[highest_prio]), struct semaphore_elem, elem );
-	
-	if (list_empty(&p_arr->queue[highest_prio]))
-		bitmap_reset(p_arr->map, first_bit);
-
-	p_arr->num--;
-
-	return sema_elem;
 }
