@@ -19,13 +19,16 @@ static void syscall_handler (struct intr_frame *);
 static int get_user (const uint8_t *uaddr);
 static bool put_user (uint8_t *udst, uint8_t byte);
 static int get_user32 (const uint32_t *uaddr);
-static bool ceck_phys_base(const void *ptr);
-static bool check_buf_size(const void *buf, const unsigned size);
-static bool check_buf_size_put(const void *buf, const unsigned size);
+static bool check_phys_base(const void *ptr);
+static void check_buf_size(const void *buf, const unsigned size);
+static void check_buf_size_put(const void *buf, const unsigned size);
+static void check_string (char *str_);
 static uint32_t extract_arg(const uint32_t *esp);
 
 // System Call 구현한 것들
 static void exit(uint32_t *esp);
+static tid_t exec(uint32_t *esp);
+static int wait(uint32_t *esp);
 static int read(uint32_t *esp);
 static int write(uint32_t *esp);
 static bool create(uint32_t *esp);
@@ -75,6 +78,12 @@ syscall_handler (struct intr_frame *f UNUSED)
 			break;
 		case SYS_CLOSE:
 			close(esp);
+			break;
+		case SYS_EXEC:
+			f->eax = (uint32_t)exec(f->esp);
+			break;
+		case SYS_WAIT:
+			f->eax = wait(esp);
 			break;
 		default:
 			printf("system call! : syscall num = %d\n", sys_num);
@@ -129,7 +138,7 @@ static bool check_phys_base(const void *ptr)
 }
 
 /* buf가 가리키는 문자열이 user memory 영역에 있는지 검사한다. */
-static bool check_buf_size(const void *buf, const unsigned size)
+static void check_buf_size(const void *buf, const unsigned size)
 {
 	int i = 0;
 	uint8_t *cur;
@@ -143,7 +152,7 @@ static bool check_buf_size(const void *buf, const unsigned size)
 }
 
 /* write할 문자열이 user memory 영역에 있는지 검사한다. */
-static bool check_buf_size_put(const void *buf, const unsigned size)
+static void check_buf_size_put(const void *buf, const unsigned size)
 {
 	int i = 0;
 	uint8_t *cur;
@@ -153,6 +162,21 @@ static bool check_buf_size_put(const void *buf, const unsigned size)
 	{
 		if (put_user(cur, (uint8_t)0) == -1)  //segfault가 발생한 경우
 			thread_exit();
+	}
+}
+
+/* 문자열의 길이를 모를때 검사 */
+static void check_string (char *str_)
+{
+	char *str = str_;
+	if (get_user((const uint8_t *)str) == -1)
+		thread_exit();
+	check_phys_base(str);
+
+	while (str[0] != '\0') {
+		if (get_user((const uint8_t *)++str) == -1)
+			thread_exit();
+		check_phys_base(str);
 	}
 }
 
@@ -171,15 +195,30 @@ static uint32_t extract_arg(const uint32_t *esp)
 
 /************ System Call 구현 **************/
 
-/* child process를 고려하지 않고 간단하게 구현한 exit() */
 static void exit(uint32_t *esp)
 {
 	int status = (int)extract_arg(++esp);
 
+	thread_current()->exited_by_exit_call = true;
 	thread_current()->exit_status = status;
 	thread_exit();
 }
 
+static tid_t exec(uint32_t *esp)
+{
+	check_phys_base(++esp);
+	char *arg = (char *)extract_arg(esp);
+	check_string(arg);
+	return process_execute(arg);
+}
+
+static int wait(uint32_t *esp)
+{
+	check_phys_base(++esp);
+	tid_t pid = (tid_t)extract_arg(esp);
+	return process_wait(pid);
+}
+	
 static int read(uint32_t *esp)
 {
 	int fd = (int)extract_arg(++esp);

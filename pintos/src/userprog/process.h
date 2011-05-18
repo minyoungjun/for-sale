@@ -2,6 +2,7 @@
 #define USERPROG_PROCESS_H
 
 #include "threads/thread.h"
+#include "threads/synch.h"
 
 tid_t process_execute (const char *file_name);
 int process_wait (tid_t);
@@ -22,8 +23,18 @@ struct argaddress {
 	struct list_elem elem;
 };
 
+//exec() 호출에 필요한 구조체
+struct exec_arg {
+	char *filename;
+	struct semaphore sema;
+	bool success;
+};
+
 bool arg_parse (const char *file_name_, struct list *argv, int *argc);
 void *arg_push (struct list *argv, const int argc);
+
+//child process를 위한 함수
+struct child_process *find_child (tid_t pid, struct thread *t);
 
 
 #endif /* userprog/process.h  */
