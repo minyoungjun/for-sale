@@ -9,6 +9,11 @@
 #include "threads/malloc.h"
 #include "devices/input.h"
 #include "threads/synch.h"
+#ifdef VM
+#include <round.h>
+#include "vm/page.h"
+#include "userprog/pagedir.h"
+#endif
 
 /* This is a skeleton system call handler */
 
@@ -35,6 +40,9 @@ static bool create(uint32_t *esp);
 static int open(uint32_t *esp);
 static int filesize(uint32_t *esp);
 static void close(uint32_t *esp);
+static int handle_mmap(uint32_t *esp);
+static struct mapped_file *find_mapped_file(uint32_t mapid);
+static void handle_munmap(uint32_t *esp);
 static struct file *find_open_file (struct thread *cur_thread, const int fd);
 static bool remove_open_file (struct thread *cur_thread, const int fd);
 
@@ -84,6 +92,16 @@ syscall_handler (struct intr_frame *f UNUSED)
 			break;
 		case SYS_WAIT:
 			f->eax = wait(esp);
+			break;
+		case SYS_MMAP:
+#ifdef VM
+			f->eax = handle_mmap(esp);
+#endif
+			break;
+		case SYS_MUNMAP:
+#ifdef VM
+			handle_munmap(esp);
+#endif
 			break;
 		default:
 			printf("system call! : syscall num = %d\n", sys_num);
@@ -420,3 +438,174 @@ static bool remove_open_file (struct thread *cur_thread, const int fd)
 
 	return false;
 }
+
+
+/******** Memory Mapped File을 다루는 syscall ***********/
+
+#ifdef VM
+static int handle_mmap (uint32_t *esp) 
+{ 
+  uint32_t fd;
+  void *addr;
+  struct file* myFile;
+  uint32_t file_len;
+  void *last_addr;
+  struct list_elem *e;
+  struct mapped_file *mf;
+  struct thread *cur;
+  struct page *p;
+  
+  cur = thread_current ();
+  
+  check_phys_base(esp+1);
+  fd = (int)extract_arg(++esp);
+  
+  if (fd == 0 || fd == 1)
+    return -1;
+  
+  myFile = find_open_file(fd, &cur->open_files);
+  if (myFile == NULL)
+    return -1;
+  
+  file_len = file_length(myFile);
+  if(file_len == 0)
+    return -1;
+  
+  check_phys_base(esp+1);
+  addr = (void *)extract_arg(++esp);
+  if((uint32_t)addr == 0)
+    return -1;
+  
+  // addr가 page align이 아닐 경우
+	if(((uint32_t)addr % PGSIZE) != 0)
+    return -1;
+    
+  last_addr = (void *)ROUND_UP((uint32_t)addr+(uint32_t)file_len, (uint32_t)PGSIZE);
+  if((uint32_t)addr < (uint32_t)cur->max_code_seg_addr)
+    return -1;
+    
+  for (e=list_begin(&cur->mf_table) ; e != list_end(&cur->mf_table) ;
+				e = list_next(e))
+  {
+    mf = list_entry(e, struct mapped_file, elem);
+    
+    if ((uint32_t)addr >= (uint32_t)mf->addr && 
+        (uint32_t)addr < ((uint32_t)mf->addr + mf->size))
+       return -1;
+    
+    if ((uint32_t)last_addr >= (uint32_t)mf->addr && 
+        (uint32_t)last_addr < ((uint32_t)mf->addr + mf->size))
+       return -1;
+    
+    if ((uint32_t)addr < (uint32_t)mf->addr &&
+        (uint32_t)last_addr > ((uint32_t)mf->addr + mf->size))
+       return -1;  
+  }
+  
+  mf = (struct mapped_file *)malloc(sizeof(struct mapped_file));
+  if (mf == NULL)
+    thread_exit ();
+  
+	mf->addr = addr;
+  mf->size = file_length (myFile);
+  mf->file = file_reopen (myFile);
+  mf->mapid = cur->mmid;
+  
+  uint32_t lps = 0;
+  
+  while (file_len > 0)
+  {
+    p = (struct page *) malloc (sizeof(struct page));
+    p->read_b = (file_len < PGSIZE) ? file_len : PGSIZE;
+    p->zero_b = PGSIZE - file_len;
+    p->location = mf->file;
+    p->pg = PAG_FILE;
+    p->writable = true;
+    p->page = addr;
+    p->ofs = (lps++) * PGSIZE;
+    
+    lock_acquire(&cur->lock_spt);
+    list_push_front(&cur->sup_page_table, &p->elem);
+    lock_release(&cur->lock_spt);
+    
+    file_len -= p->read_b;
+    addr = (void *)((uint32_t)addr + (uint32_t)PGSIZE);
+  }
+  
+  list_push_front(&cur->mf_table, &mf->elem);
+  
+  return cur->mmid++;
+}
+
+static struct mapped_file *find_mapped_file (uint32_t mapid)
+{
+  struct list_elem *e;
+  struct thread *cur;
+  struct mapped_file *mf;
+  
+  cur = thread_current();
+  
+  for (e = list_begin(&cur->mf_table) ; e != list_end(&cur->mf_table) ; 
+			 e = list_next(e)) 
+  {
+    mf = list_entry(e, struct mapped_file, elem);
+    if (mf->mapid == mapid)
+      return mf;
+  }
+  
+  return NULL;
+}
+
+static void handle_munmap(uint32_t *esp) 
+{
+  uint32_t mapid;
+  struct thread *cur;
+  struct mapped_file *mf;
+  int write_b;
+  struct page *p;
+  
+  cur = thread_current();
+  
+ 	check_phys_base(esp+1);
+  mapid = (int) extract_arg(++esp);
+  mf = find_mapped_file (mapid);
+  
+  if (mf != NULL) 
+  {
+    uint32_t size = mf->size;
+    void *addr = mf->addr;
+    void *kpage;
+    
+    while (size > 0)
+    {
+      p = supplemental_table_look_up(addr);
+      if(p == NULL) {
+        printf ("WTF unmap?\n");
+        thread_exit ();
+      }
+      
+      write_b = p->read_b;
+        
+      lock_acquire (&cur->lock_spt);
+      kpage = pagedir_get_page(cur->pagedir, p->page);
+      if (kpage != NULL) {
+        if(pagedir_is_dirty(cur->pagedir, p->page)) {
+          if(file_write_at(mf->file, kpage, write_b, p->ofs) != write_b)
+            thread_exit ();
+        }
+        pagedir_clear_page (cur->pagedir, mf->addr);
+      }
+      lock_release (&thread_current ()->lock_spt);
+      
+      supplemental_table_free_page (p);
+      size -= write_b;
+      addr += write_b;
+    }
+    
+    file_close (mf->file);
+    list_remove (&mf->elem);
+    free (mf);
+  }
+}
+
+#endif

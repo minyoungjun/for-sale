@@ -98,15 +98,10 @@ struct thread
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
-#endif
-
-    /* Owned by thread.c. */
-    unsigned magic;                     /* Detects stack overflow. */
-
 		int exit_status;
-		bool exited_by_exit_call;			      /* 현 스레드가 user process이고 exit() syscall로 종료된 경우 */
-		bool is_userprog;										/* 이 스레드가 user program인지를 나타냄 */
-		struct list open_files;             /* Open File들의 리스트 : struct open_file이 들어감 */
+		bool exited_by_exit_call;	 /* user process이고 exit()로 종료된 경우 */
+		bool is_userprog;					 /* 이 스레드가 user program인지를 나타냄 */
+		struct list open_files;    /* Open File들의 리스트 */
 		int next_fd;
 
 		struct list childs;
@@ -114,9 +109,24 @@ struct thread
 
 		struct file *file;
 		struct lock lock;
-
 		struct list locks;									/* 이 스레드가 acquire하고 있는 locks */
-	};
+#endif
+
+#ifdef VM
+		struct list sup_page_table;   /* 이 스레드가 갖고 있는 페이지의 리스트
+															    (이 페이지들은 main memory에 없는 것들!) */
+		struct lock lock_spt;			    /* sup_page_table을 위한 lock */
+		
+		struct list mf_table;         /* 이 스레드의 mapped file의 테이블 */
+		uint32_t mmid;								/* 메모리 안의 mapped files의 첫번째 descriptor */
+		void *max_code_seg_addr;      /* code/data segment의 maximum address */
+		struct semaphore sema_pf;     /* page fault를 위한 세마포 */
+#endif
+
+    /* Owned by thread.c. */
+    unsigned magic;                     /* Detects stack overflow. */
+
+ };
 
 struct open_file
 {
@@ -130,6 +140,15 @@ struct child_process
 	tid_t pid_t;
 	int exit_status;
 	struct semaphore sema;
+	struct list_elem elem;
+};
+
+struct mapped_file
+{
+	uint32_t mapid;
+	struct file *file;
+	uint8_t *addr;
+	uint32_t size;
 	struct list_elem elem;
 };
 

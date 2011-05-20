@@ -33,6 +33,10 @@
 #else
 #include "tests/threads/tests.h"
 #endif
+#ifdef VM   // Project 4를 위해 추가
+#include "vm/frame.h"
+#include "vm/swap.h"
+#endif
 #ifdef FILESYS
 #include "devices/disk.h"
 #include "filesys/filesys.h"
@@ -83,6 +87,11 @@ main (void)
   thread_init ();
   console_init ();  
 
+	// Frame Table 초기화
+#ifdef VM
+	frame_table_init();
+#endif
+
 	/* Break command line into arguments and parse options. */
   argv = read_command_line ();
   argv = parse_options (argv);
@@ -125,6 +134,11 @@ main (void)
   /* Initialize file system. */
   disk_init ();
   filesys_init (format_filesys);
+#endif
+
+	//Swap Partition 초기화
+#ifdef VM
+	swap_init();
 #endif
 
   printf ("Boot complete.\n");
