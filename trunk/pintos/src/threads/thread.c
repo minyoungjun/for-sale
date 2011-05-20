@@ -510,6 +510,7 @@ init_thread (struct thread *t, const char *name, int priority)
   t->magic = THREAD_MAGIC;
   list_push_back (&all_list, &t->allelem);
 
+#ifdef USERPROG
 	//Open File List 초기화
 	list_init (&t->open_files);
 	t->next_fd = 2;		// fd=0은 STDIN_FILEN, fd=1은 STDOUT_FILENO으로 예약되어있으므로 open file의 fd는 2에서 시작
@@ -529,6 +530,19 @@ init_thread (struct thread *t, const char *name, int priority)
 
 	//Lock List 초기화
 	list_init (&t->locks);
+#endif
+
+#ifdef VM
+	//Supplemental Page Table 초기화
+	list_init(&t->sup_page_table);
+	lock_init(&t->lock_spt);
+	//Mapped file 관련 초기화
+	t->mmid = 0;
+	list_init(&t->mf_table);
+	t->max_code_seg_addr = 0;
+	
+	sema_init(&t->sema_pf, 1);
+#endif	
 
 }
 

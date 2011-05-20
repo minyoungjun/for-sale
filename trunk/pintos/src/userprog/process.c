@@ -20,6 +20,10 @@
 #include "threads/malloc.h"
 #include "threads/synch.h"
 #include "userprog/syscall.h"
+#ifdef VM
+#include "vm/frame.h"
+#include "vm/page.h"
+#endif
 
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
@@ -31,19 +35,23 @@ static bool load (const char *cmdline, void (**eip) (void), void **esp);
 tid_t
 process_execute (const char *file_name) 
 {
-  char *fn_copy;
+  char *fn_copy, *temp, *name, *aux;
   tid_t tid;
 
   /* Make a copy of "FILE_NAME".
      Otherwise there's a race between the caller and load(). */
   fn_copy = palloc_get_page (0);
-  if (fn_copy == NULL)
+	temp = palloc_get_page(0);
+  if (fn_copy == NULL || temp == NULL)
     return TID_ERROR;
   strlcpy (fn_copy, file_name, PGSIZE);
+	strlcpy (temp, file_name, PGSIZE);
+	name = strtok_r (temp, " ", &aux);
 
 	struct child_process *child = (struct child_process *)malloc(sizeof(struct child_process));
 	if (child == NULL) {
 		palloc_free_page(fn_copy);
+		palloc_free_page(temp);
 		thread_exit();
 	}
 	sema_init(&child->sema, 0);
@@ -51,6 +59,7 @@ process_execute (const char *file_name)
 	struct exec_arg *args = (struct exec_arg *)malloc(sizeof(struct exec_arg));
 	if (args == NULL) {
 		palloc_free_page(fn_copy);
+		palloc_free_page(temp);
 		free(child);
 		thread_exit();
 	}
@@ -60,11 +69,13 @@ process_execute (const char *file_name)
 
   /* Create a new thread to execute FILE_NAME. */
 	lock_acquire(&thread_current()->lock);
-  tid = thread_create (file_name, PRI_DEFAULT, start_process, args);
+  tid = thread_create (name, PRI_DEFAULT, start_process, args);
 	child->pid_t = tid;
 	if (tid != TID_ERROR)
 		list_push_front(&thread_current()->childs, &child->elem);
 	lock_release(&thread_current()->lock);
+
+	palloc_free_page(temp);
 
   if (tid == TID_ERROR) {
     palloc_free_page (fn_copy);
@@ -157,7 +168,7 @@ process_exit (void)
   struct thread *cur = thread_current ();
   uint32_t *pd;
 	struct open_file *open_file;
-	struct child_process *child;
+	struct child_process *child = NULL;
 	int ret;
 
 	//이 스레드의 모든 open file을 close
@@ -174,11 +185,13 @@ process_exit (void)
 	}
 
 	if (cur->is_userprog) {
-		if (!cur->exited_by_exit_call)
+		if (!cur->exited_by_exit_call) {
+			printf("%s: exit(-1)\n", cur->name);
 			child->exit_status = -1;
+		}
 		else {
-			ret = (cur->exit_status < 0) ? -1 : cur->exit_status;
-			child->exit_status = ret;
+			printf("%s: exit(%d)\n", cur->name, cur->exit_status);
+			child->exit_status = cur->exit_status;
 		}
 	}
 /*
@@ -190,6 +203,13 @@ process_exit (void)
 		cur->file = NULL;
 	}
 */
+
+#ifdef VM
+	frame_table_rmf(thread_current());
+	mf_table_destroy();
+	supplemental_table_destroy();
+#endif
+
   /* Destroys the current process's page directory and switch back
      to the kernel-only page directory. */
   pd = cur->pagedir;
@@ -432,13 +452,9 @@ load (const char *file_name, void (**eip) (void), void **esp)
 
  done:
   /* We arrive here whether the load is successful or not. */
-  file_close (file);
   return success;
 }
 
-/* load() helpers. */
-
-static bool install_page (void *upage, void *kpage, bool writable);
 
 /* Checks whether PHDR describes a valid, loadable segment in
    FILE and returns true if so, false otherwise. */
@@ -478,8 +494,8 @@ validate_segment (const struct Elf32_Phdr *phdr, struct file *file)
      it then user code that passed a null pointer to system calls
      could quite likely panic the kernel by way of null pointer
      assertions in memcpy(), etc. */
-  //if (phdr->p_vaddr < PGSIZE)
-    //return false;
+  if (phdr->p_vaddr < PGSIZE)
+    return false;
 
   /* It's okay. */
   return true;
@@ -507,7 +523,12 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
   ASSERT (pg_ofs (upage) == 0);
   ASSERT (ofs % PGSIZE == 0);
 
+#ifdef VM
+	uint32_t cnt_loaded_pages = 0;
+#else
   file_seek (file, ofs);
+#endif
+
   while (read_bytes > 0 || zero_bytes > 0) 
     {
       /* Calculate how to fill this page.
@@ -516,6 +537,32 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
       size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
+#ifdef VM
+			// 매 페이지를 요구페이징 해야한다.
+			struct page *sup_page = (struct page *)malloc(sizeof(struct page));
+			if (sup_page == NULL) {
+				printf("Error! : load_segment(): malloc sup_page\n");
+				return false;
+			}
+
+			sup_page->page = upage;
+			sup_page->writable = writable;
+			sup_page->pg = PAG_EXEC;
+			sup_page->location = file;
+			sup_page->read_b = page_read_bytes;
+			sup_page->zero_b = page_zero_bytes;
+			sup_page->ofs = (uint32_t)ofs + (cnt_loaded_pages * (uint32_t)PGSIZE);
+			cnt_loaded_pages++;
+
+			if ((uint32_t)thread_current()->max_code_seg_addr
+						< ((uint32_t)upage + (uint32_t)PGSIZE))
+				thread_current()->max_code_seg_addr = 
+						(void *)((uint32_t)upage + (uint32_t)PGSIZE);
+
+			lock_acquire(&thread_current()->lock_spt);
+			list_push_back(&thread_current()->sup_page_table, &sup_page->elem);
+			lock_release(&thread_current()->lock_spt);
+#else
       /* Get a page from memory. */
       uint8_t *kpage = palloc_get_page (PAL_USER);
       if (kpage == NULL)
@@ -535,6 +582,7 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
           palloc_free_page (kpage);
           return false; 
         }
+#endif
 
       /* Advance. */
       read_bytes -= page_read_bytes;
@@ -573,7 +621,7 @@ setup_stack (void **esp)
    with palloc_get_page().
    Returns true on success, false if UPAGE is already mapped or
    if memory allocation fails. */
-static bool
+bool
 install_page (void *upage, void *kpage, bool writable)
 {
   struct thread *t = thread_current ();

@@ -1,9 +1,18 @@
 #include "userprog/exception.h"
 #include <inttypes.h>
 #include <stdio.h>
+#include <stdbool.h>
 #include "userprog/gdt.h"
 #include "threads/interrupt.h"
 #include "threads/thread.h"
+#include "userprog/process.h"
+#include "threads/vaddr.h"
+#ifdef VM
+#include "vm/page.h"
+#include "vm/frame.h"
+#include "vm/swap.h"
+#define EIGHT_MB (8*1024*1024)
+#endif
 
 /* Number of page faults that are processed. */
 static long long page_fault_cnt;
@@ -127,6 +136,14 @@ page_fault (struct intr_frame *f)
   bool user;         /* True: access by user, false: access by kernel. */
   void *fault_addr;  /* Fault address. */
 
+#ifdef VM
+	struct page *page;
+	struct thread *t;
+	void *faulted_page;
+	uint32_t dif;
+	bool conti;
+#endif
+
   /* Obtain faulting address, the virtual address that was
      accessed to cause the fault.  It may point to code or to
      data.  It is not necessarily the address of the instruction
@@ -148,14 +165,51 @@ page_fault (struct intr_frame *f)
   write = (f->error_code & PF_W) != 0;
   user = (f->error_code & PF_U) != 0;
 
+#ifdef VM
+	conti = false;
+	t = thread_current();
+
+	sema_down(&t->sema_pf);
+	sema_up(&t->sema_pf);
+
+	if (not_present && fault_addr < PHYS_BASE) {
+		faulted_page = pg_round_down(fault_addr);
+		page = supplemental_table_look_up(faulted_page);
+		if (page != NULL) { //faulted_page가 이 스레드의 sup_page_table에 있을때
+			supplemental_table_load_page(page);  //그 테이블에서 load
+			conti = true;
+		}
+
+		if (!user && !conti)
+			thread_exit();
+	}
+#endif
+
+	if (!user) {
+#ifdef VM
+		if (!conti) {
+#endif
+			uint32_t tmp = f->eax;
+			f->eax = 0xffffffff;
+			f->eip = (void(*)(void))tmp;
+#ifdef VM
+		}
+#endif
+	} else {
+#ifdef VM
+		if (!conti)
+#endif
+			thread_exit();
+	}
+
   /* To implement virtual memory delete the rest of the function
      body, and replace it with code that brings in the page to
      which fault_addr refers. */
-  printf ("Page fault at %p: %s error %s page in %s context.\n",
+/*  printf ("Page fault at %p: %s error %s page in %s context.\n",
           fault_addr,
           not_present ? "not present" : "rights violation",
           write ? "writing" : "reading",
           user ? "user" : "kernel");
-  kill (f);
+  kill (f); */
 }
 
