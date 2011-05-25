@@ -116,10 +116,7 @@ struct thread
 		struct list sup_page_table;   /* 이 스레드가 갖고 있는 페이지의 리스트
 															    (이 페이지들은 main memory에 없는 것들!) */
 		struct lock lock_spt;			    /* sup_page_table을 위한 lock */
-		
-		struct list mf_table;         /* 이 스레드의 mapped file의 테이블 */
-		uint32_t mmid;								/* 메모리 안의 mapped files의 첫번째 descriptor */
-		void *max_code_seg_addr;      /* code/data segment의 maximum address */
+		void *max_code_seg_addr;
 		struct semaphore sema_pf;     /* page fault를 위한 세마포 */
 #endif
 
@@ -140,15 +137,6 @@ struct child_process
 	tid_t pid_t;
 	int exit_status;
 	struct semaphore sema;
-	struct list_elem elem;
-};
-
-struct mapped_file
-{
-	uint32_t mapid;
-	struct file *file;
-	uint8_t *addr;
-	uint32_t size;
 	struct list_elem elem;
 };
 

@@ -13,38 +13,26 @@
 #include "userprog/pagedir.h"
 #include "devices/rtc.h"
 
-static struct list frame_list;
-
-static struct list_elem *victim_frame;
-
+static struct list frmList;
 static struct lock lock;
+static struct list_elem *vicFrame;
 
-/* Initializes frame table components */
-void
-frame_table_init () 
-{
-  list_init (&frame_list);
+// 테이블 프레임의 구성요소들을 초기화한다.
+void initFTable () {
+  list_init (&frmList);
   lock_init (&lock);
-  victim_frame = NULL;
+  vicFrame = NULL;
 }
 
-/* Return the frame_table */
-struct list*
-frame_table ()
-{
-  return &frame_list;
+// 프레임 테이블을 리턴한다.
+struct list* retFTable () {
+  return &frmList;
 }
 
-/* Looks for a given frame in the frame table
-   if the given frame does not exist then returns NULL,
-   Note tha you must use apropiade sychronization when you 
-   want to use this function, is a desicion of desing don't use
-   synchronization in this function, so never add this feature
-   because can cuase several problems */
-struct frame*
-frame_table_look_up (void *_frame)
+// 프레임 테이블에서 주어진 프레임을 찾는다. 만약 없으면 NULL을 리턴한다.
+struct frame* scanFTable (void *_frame)
 {
-  struct list *list = frame_table ();
+  struct list *list = retFTable ();
   struct list_elem *e;
   struct frame *frame = NULL;
 
@@ -56,15 +44,13 @@ frame_table_look_up (void *_frame)
 	    return frame;
 		}
   }
-
-  return NULL; // Really in most cases this is an error, take care about this situaton
+  return NULL;
 }
 
 // 가장 오래 사용되지 않은 프레임을 찾기 위해 선언된 구조체.
-struct frame*
-frame_table_find_min ()
+struct frame* getminFTable ()
 {
-  struct list *list = frame_table ();
+  struct list *list = retFTable ();
   struct list_elem *e;
   struct frame *frame = NULL;
   struct frame *retframe = NULL;
@@ -89,15 +75,14 @@ frame_table_find_min ()
   return retframe;
 }
 
-/* Inserts the given frame if and only if it's not already */
-struct frame *
-frame_table_insert (void *_frame, void *upage, bool writable)
+// 주어진 프레임을 프레임 테이블에 삽입한다. 중복일 경우 삽입하지 않는다.
+struct frame *insertFTable (void *_frame, void *upage, bool writable)
 {
   struct frame* f;
 
   f = (struct frame *) malloc (sizeof(struct frame));
 
-  if(f == NULL) // Unexpected error
+  if(f == NULL) // 이 경우는 대개 예측 불가능한 에러이므로 쓰레드를 종료한다.
     thread_exit ();
 
   f->address = _frame;
@@ -107,43 +92,40 @@ frame_table_insert (void *_frame, void *upage, bool writable)
   f->evictable = false;
 
   lock_acquire(&lock);
-  list_push_front(frame_table (), &f->elem);
+  list_push_front(retFTable (), &f->elem);
   lock_release(&lock);
   
   return f;
 }
 
-/* Returns a new zeroed frame from the user pool */
-struct frame *
-frame_table_get_frame (void *upage, bool writable)
-{
+// 유저 풀에서 새 zeroed frame을 리턴한다.
+struct frame *getzeroFTable (void *upage, bool writable) {
   struct frame *f = NULL;
-  void * user_page = palloc_get_page (PAL_USER | PAL_ZERO);
   struct slot *slot;
   struct page *p;
+  void * user_page = palloc_get_page (PAL_USER | PAL_ZERO);
   bool dirty;
   enum intr_level prev;
   
-  // Gets the page from main memory
-  if(user_page == NULL)
-  {
+  // 메인 메모리에서 페이지를 받는다.
+  if(user_page == NULL) {
     lock_acquire (&lock);
     
-    // Chosses a victim from page table
-    f = frame_table_choose_victim ();
+	// 프레임 테이블에서 victim을 찾아서 받는다.
+    f = getvictimFTable ();
     
     if(f==NULL)
     {
       lock_release (&lock);
-      printf ("What the fuck in get_frame?\n");
+      printf ("Failed to find the victim frame.\n");
       thread_exit ();
     }
     
-    // Writes the frame in swap or file system if necessary
-    p = supplemental_table_look_up_ext (f->page, f->owner);
+    // 스왑이나 파일 시스템에 프레임을 쓴다.
+    p = scanST_ext (f->page, f->owner);
     if (p!=NULL)
     {
-      // Stop if necessary
+      // 경우에 따라 중지한다.
       sema_down (&f->owner->sema_pf);
       
       prev = intr_disable ();
@@ -155,72 +137,65 @@ frame_table_get_frame (void *upage, bool writable)
         if(file_write_at ((struct file *)p->location, f->address, p->read_b, p->ofs) != (int)p->read_b)
           thread_exit ();
       
-      // continue normally 
+      // 정상적으로 진행한다.
       sema_up (&f->owner->sema_pf);
     }
     else
     {
-      // Stop if necessary
+      // 필요한 경우 중지.
       sema_down (&f->owner->sema_pf);
       
       pagedir_clear_page (f->owner->pagedir, f->page); 
-      // Writes the content of fram chosen
+      // 선택된 프레임의 내용을 쓴다.
       slot = write_swap (f->address);
-      // Adds the chosen frame to the supplemental table
-      // of the process that is going to give the frame
-      supplemental_table_add_frame (f, slot);
+      /* 선택된 프레임을 프레임을 주려 하는
+      	 프로세스의 supplemental table에 추가한다. */
+      addframeST (f, slot);
       
-      // continue normally 
+      // 계속 진행.
       sema_up (&f->owner->sema_pf);
     }
     
     lock_release (&lock);
     
-    // Fills with zeros the chose frame
+    // 주어진 프레임을 zerofy한다.
     memset (f->address, 0, PGSIZE);
     
-    // Makes this frame's owner to the current thread
+    // 현재 쓰레드의 주인에 대한 프레임을 만들고, 현재 시간을 받는다.
     f->owner = thread_current ();
     f->page = upage;
     f->writable = writable;
     f->finish = rtc_get_time();
   } 
   else {
-    f = frame_table_insert (user_page, upage, writable);
+    f = insertFTable (user_page, upage, writable);
     f->finish = rtc_get_time();
   }
   return f;
 }
 
-/* Returns a victim following the enhenced second chance
-   algorithm, at the beginning use FIFO algorithm,
-   use synch to use correctly this fucntion */
-struct frame *
-frame_table_choose_victim ()
-{
+// RLU 알고리즘을 이용하여 victim을 찾는다.
+struct frame *getvictimFTable () {
   struct list_elem *temp = NULL;
   struct frame *f;
 
-  if(!list_empty (frame_table ()))
-  {
-    if(victim_frame == NULL)
-        victim_frame = frame_table_find_min ();
-
-//      victim_frame = list_begin (frame_table ());
+  if(!list_empty (retFTable ())) {
+    if(vicFrame == NULL)
+        vicFrame = getminFTable ();
 
     while(true)
     {
-      f = list_entry (victim_frame, struct frame, elem);
+      f = list_entry (vicFrame, struct frame, elem);
       if(f->evictable)
       {
         if(!pagedir_is_accessed (f->owner->pagedir, f->page))
         {
-          temp = victim_frame;
+          temp = vicFrame;
     
-          if(list_next (victim_frame) == list_end (frame_table ()))
-            victim_frame = list_begin (frame_table ());
+          if(list_next (vicFrame) == list_end (retFTable ()))
+            vicFrame = list_begin (retFTable ());
           else
-            victim_frame = list_next (victim_frame);
+            vicFrame = list_next (vicFrame);
             
           break;
         }
@@ -229,10 +204,10 @@ frame_table_choose_victim ()
       }
       else
       {
-        if(list_next (victim_frame) == list_end (frame_table ()))
-          victim_frame = list_begin (frame_table ());
+        if(list_next (vicFrame) == list_end (retFTable ()))
+          vicFrame = list_begin (retFTable ());
         else
-          victim_frame = list_next (victim_frame);
+          vicFrame = list_next (vicFrame);
       }
     }
     
@@ -243,17 +218,15 @@ frame_table_choose_victim ()
   return NULL;
 }
 
-/* Removes a frame from the frame table */
-void 
-frame_table_remove (struct frame *f)
-{
+// 프레임 테이블에서 주어진 프레임을 찾아 제거한다.
+void removeFTable (struct frame *f) {
   struct frame *temp;
   
   if(f != NULL) 
   {
     lock_acquire (&lock);
     
-    temp = frame_table_look_up (f);
+    temp = scanFTable (f);
     
     if(temp != NULL) {
       palloc_free_page (f->address);
@@ -264,16 +237,15 @@ frame_table_remove (struct frame *f)
   }
 }
 
-/* Removes all the frames asociated with a given thread */
-void
-frame_table_rmf (struct thread *t)
+// 주어진 쓰레드와 관련된 모든 프레임들을 제거한다.
+void raFTable (struct thread *t)
 {
   struct list_elem *e;
   struct list_elem *temp;
   struct frame *f;
   
   lock_acquire (&lock);
-  for(e=list_begin (frame_table ()); e!=list_end (frame_table ());)
+  for(e=list_begin (retFTable ()); e!=list_end (retFTable ());)
   {
     f = list_entry (e, struct frame, elem); 
     if(f->owner == t && f->evictable)
@@ -289,14 +261,13 @@ frame_table_rmf (struct thread *t)
   lock_release (&lock);
 }
 
-/* Update the accesed bit for all frames in frame table */
-void
-frame_table_update_accessed_bit ()
+// 프레임 테이블 내의 모든 프레임들에 관련된 accessed bit들을 새로 고친다.
+void ref_accessed_bitFTable ()
 {
   struct list_elem *e;
   struct frame *cf;
   
-  for(e=list_begin (frame_table ()); e!=list_end (frame_table ()); e=list_next(e)) 
+  for(e=list_begin (retFTable ()); e!=list_end (retFTable ()); e=list_next(e)) 
   {
     cf = list_entry (e, struct frame, elem);
 
