@@ -47,7 +47,7 @@ struct frame* scanFTable (void *_frame)
   return NULL;
 }
 
-// 가장 오래 사용되지 않은 프레임을 찾기 위해 선언된 구조체.
+// 가장 오래 사용되지 않은 프레임을 찾기 위해 선언된 함수
 struct frame* getminFTable ()
 {
   struct list *list = retFTable ();
@@ -174,7 +174,7 @@ struct frame *getzeroFTable (void *upage, bool writable) {
   return f;
 }
 
-// RLU 알고리즘을 이용하여 victim을 찾는다.
+// LRU 알고리즘을 이용하여 victim을 찾는다.
 struct frame *getvictimFTable () {
   struct list_elem *temp = NULL;
   struct frame *f;
