@@ -140,7 +140,6 @@ page_fault (struct intr_frame *f)
 	struct page *page;
 	struct thread *t;
 	void *faulted_page;
-	uint32_t dif;
 	bool conti;
 #endif
 
