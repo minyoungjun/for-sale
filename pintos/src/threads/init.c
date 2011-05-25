@@ -89,7 +89,7 @@ main (void)
 
 	// Frame Table 초기화
 #ifdef VM
-	frame_table_init();
+	initFTable();
 #endif
 
 	/* Break command line into arguments and parse options. */
