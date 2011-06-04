@@ -33,6 +33,7 @@ struct bfc_entry *buffer_cache_look_up (struct inode *, off_t);
 void init_buffer_cache (void);
 void buffer_cache_write_behind (struct bfc_entry *);
 void buffer_cache_write_behind_all (void);
+void buffer_cache_write_behind_inode (struct inode *);
 void buffer_cache_flush (void);
 void check_buffer_cache (void);
 

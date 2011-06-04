@@ -79,6 +79,8 @@ main (void)
 {
   char **argv;
 
+	is_init_bfc = false;
+
   /* Clear BSS and get machine's RAM size. */  
   ram_init ();
 
@@ -135,6 +137,7 @@ main (void)
   disk_init ();
 	init_buffer_cache();
   filesys_init (format_filesys);
+	is_init_bfc = true;
 #endif
 
 	//Swap Partition 초기화

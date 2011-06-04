@@ -205,7 +205,8 @@ timer_interrupt (struct intr_frame *args UNUSED)
 {
   ticks++;
 	check_unblockable();  /* unblock 될수있는 스레드가 있는지 검사 */
-	  //check_buffer_cache();
+/*	if (is_init_bfc)
+	  check_buffer_cache();*/
 	thread_tick ();
 }
 

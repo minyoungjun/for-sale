@@ -31,25 +31,18 @@ void init_buffer_cache(void)
 
 void check_buffer_cache(void)
 {
+	enum intr_level old_level;
+	old_level = intr_disable();
+
 	bfc_tick++;
 	if (bfc_tick == BFC_TICK_FEQ) {
 		buffer_cache_write_behind_all();
 		bfc_tick = 0;
 	}
+
+	intr_set_level (old_level);
 }
   
-/* inode의 파일에서 pos위치에 해당하는 disk sector를 리턴.
-	 pos가 적절한 위치가 아닐 경우 -1 리턴 */
-/*static disk_sector_t byte_to_sector(struct inode *inode, off_t pos) 
-{
-  ASSERT (inode != NULL);
-  
-  if (pos < inode->data.length)
-    return inode->data.start + pos / DISK_SECTOR_SIZE;
-  else
-    return -1;
-}*/
-
 static struct bfc_entry *select_victim() 
 {
   struct bfc_entry *cur;
@@ -90,10 +83,13 @@ static struct bfc_entry *select_victim()
 /* 이 함수는 look_up()의 결과가 NULL일때 호출된다. */
 struct bfc_entry *buffer_cache_get_entry (struct inode *inode, off_t offset)
 {
-  ASSERT (offset % DISK_SECTOR_SIZE == 0);
+  //ASSERT (offset % DISK_SECTOR_SIZE == 0);
     
   struct bfc_entry *bfce;
   disk_sector_t sector_idx = byte_to_sector(inode, offset);
+
+	if ((int)sector_idx == -1)
+		return NULL;
     
   if (entries < BUF_CACHE_SIZE)
   {
@@ -117,7 +113,7 @@ struct bfc_entry *buffer_cache_get_entry (struct inode *inode, off_t offset)
           
 		// 그 섹터의 data를 disk에서 읽어옴
     disk_read (filesys_disk, sector_idx, bfce->addr);
-        
+   
     bfce->inode = inode;
     bfce->offset = offset;
     bfce->dirty = false;
@@ -125,40 +121,39 @@ struct bfc_entry *buffer_cache_get_entry (struct inode *inode, off_t offset)
         
     bfce->num_of_accessor = 0;
     lock_init (&bfce->lock);
+
+#ifdef BFC_DEBUG
+		printf("DISK READ for making new bfc_entry: inode=%x, ofs=%d\n", 
+					  bfce->inode, bfce->offset);
+#endif
   }
   else
   { 
 		// buffer_cache가 꽉차있으므로 victim 선정
     bfce = select_victim ();
-        
+       
     // 선정된 entry가 dirty일 경우 disk에 write-behind
     if (bfce->dirty)
 			buffer_cache_write_behind(bfce);
         
-		//lock_acquire(&bfce->lock);
+		lock_acquire(&bfce->lock);
     disk_read (filesys_disk, sector_idx, bfce->addr);
-        
     bfce->inode = inode;
     bfce->offset = offset;
     bfce->num_of_accessor = 0;
-		//lock_release(&bfce->lock);
+		bfce->dirty = false;
+		bfce->accessed = false;
+		lock_release(&bfce->lock);
+#ifdef BFC_DEBUG
+		printf("DISK READ for overwriting a victim bfc_entry: inode=%x, ofs=%d\n",
+				   bfce->inode, bfce->offset);
+#endif
   }
       
   return bfce;
 }
 
-void buffer_cache_write_behind(struct bfc_entry *bfce)
-{
-	//lock_acquire(&bfce->lock);
-	disk_sector_t sector_idx = byte_to_sector(bfce->inode, bfce->offset);
-  disk_write(filesys_disk, sector_idx, bfce->addr);
-	bfce->dirty = false;
-  bfce->accessed = false;
-	//lock_release(&bfce->lock);
-}
-
-/* buffer_cache를 순회하며 inode, offset이 같은 entry를 찾아
-	 다시 disk_read() 한 후 리턴.
+/* buffer_cache를 순회하며 inode, offset이 같은 entry를 찾아 리턴
    만약 원하는 entry를 찾을 수 없으면 NULL 리턴*/
 struct bfc_entry *buffer_cache_look_up (struct inode *inode, off_t offset)
 {
@@ -166,23 +161,47 @@ struct bfc_entry *buffer_cache_look_up (struct inode *inode, off_t offset)
   struct bfc_entry *cur;
 	disk_sector_t sector_idx;
  
-	//lock_acquire(&bfc_lock);
+	lock_acquire(&bfc_lock);
 
   for (e = list_begin(&buffer_cache) ; e != list_end(&buffer_cache) ; 
 			 e = list_next(e)) {
     cur = list_entry(e, struct bfc_entry, elem);
     if (cur->inode == inode && cur->offset == offset) {
-			//lock_acquire(&cur->lock);
+			/*if (cur->dirty)
+				buffer_cache_write_behind(cur);
+			
+			lock_acquire(&cur->lock);
 			sector_idx = byte_to_sector(inode, offset);
       disk_read(filesys_disk, sector_idx, cur->addr);
-			//lock_release(&cur->lock);
+			lock_release(&cur->lock);*/
+
+			lock_release(&bfc_lock);
+#ifdef BFC_DEBUG
+			printf("LOOK UP Success: inode=%x, ofs=%d\n", cur->inode, cur->offset);
+#endif
       return cur;
     }
   }
 
-	//lock_release(&bfc_lock);
-    
+	lock_release(&bfc_lock);
+#ifdef BFC_DEBUG
+	printf("LOOK UP Fail: inode=%x, ofs=%d\n", inode, offset);
+#endif
   return NULL;
+}
+
+void buffer_cache_write_behind(struct bfc_entry *bfce)
+{
+	lock_acquire(&bfce->lock);
+	disk_sector_t sector_idx = byte_to_sector(bfce->inode, bfce->offset);
+  disk_write(filesys_disk, sector_idx, bfce->addr);
+	bfce->dirty = false;
+  bfce->accessed = false;
+	lock_release(&bfce->lock);
+
+#ifdef BFC_DEBUG
+	printf("Write-Behind: inode=%x, ofs=%d\n", bfce->inode, bfce->offset);
+#endif
 }
   
 /* buffer_cache를 순회하며 dirty인 entry를 모두 write-behind */
@@ -190,19 +209,61 @@ void buffer_cache_write_behind_all()
 {
   struct list_elem *e;
   struct bfc_entry *cur;
+	int cnt = 0;
   disk_sector_t sector_idx;
+
+#ifdef BFC_DEBUG
+	printf("Write-Behind-All START\n");
+#endif
     
-	//lock_acquire(&bfc_lock);
+	lock_acquire(&bfc_lock);
 
   for (e = list_begin(&buffer_cache) ; e != list_end(&buffer_cache) ; 
 			 e = list_next(e)) {
     cur = list_entry(e, struct bfc_entry, elem);
 		cur->accessed = false;
-    if (cur->dirty)
+    if (cur->dirty) {
 			buffer_cache_write_behind(cur);
+			cnt++;
+		}
   }
 
-	//lock_release(&bfc_lock);
+	lock_release(&bfc_lock);
+
+#ifdef BFC_DEBUG
+	printf("Write-Behind-All END: count=%d\n", cnt);
+#endif
+}
+
+/* buffer_cache를 순회하며 dirty인 entry를 모두 write-behind */
+void buffer_cache_write_behind_inode(struct inode *inode)
+{
+  struct list_elem *e;
+  struct bfc_entry *cur;
+	int cnt = 0;
+  disk_sector_t sector_idx;
+
+#ifdef BFC_DEBUG
+	printf("Write-Behind-Inode START: inode=%x\n", inode);
+#endif
+
+	lock_acquire(&bfc_lock);
+
+  for (e = list_begin(&buffer_cache) ; e != list_end(&buffer_cache) ; 
+			 e = list_next(e)) {
+    cur = list_entry(e, struct bfc_entry, elem);
+		if (cur->inode == inode && cur->dirty) {
+			cur->accessed = false;
+		  buffer_cache_write_behind(cur);
+			cnt++;
+		}
+  }
+
+	lock_release(&bfc_lock);
+
+#ifdef BFC_DEBUG
+	printf("Write-Behind-Inode END: inode=%x, count=%d\n", inode, cnt);
+#endif
 }
 
 /* buffer_cache의 모든 entry와 entry->addr을 모두 free.
@@ -213,6 +274,8 @@ void buffer_cache_flush ()
   struct list_elem *e;
   struct bfc_entry *cur;
   
+	lock_acquire(&bfc_lock);
+
   while (!list_empty(&buffer_cache))
   {
     e = list_pop_front(&buffer_cache);
@@ -220,6 +283,11 @@ void buffer_cache_flush ()
     free(cur->addr);
     free(cur);
   }
+
+	lock_release(&bfc_lock);
+#ifdef BFC_DEBUG
+	printf("BufferCache FLUSHED\n");
+#endif
 }
 
 /* 주로 inode_write_at()에 의해 호출된다. */
@@ -240,7 +308,7 @@ uint32_t buffer_cache_write(struct inode *inode, off_t offset,
 			thread_exit();
 	}
 
-	//lock_acquire(&bfce->lock);
+	lock_acquire(&bfce->lock);
 	bfce->num_of_accessor++;
 
 	// 이제 bfce->addr에 buffer의 데이터를 write한다.
@@ -249,38 +317,50 @@ uint32_t buffer_cache_write(struct inode *inode, off_t offset,
 	bfce->accessed = true;
 
 	bfce->num_of_accessor--;
-	//lock_release(&bfce->lock);
-	
+	lock_release(&bfce->lock);
+#ifdef BFC_DEBUG
+	printf("MEMCPY for write: inode=%x, ofs=%d\n", inode, offset);
+#endif
 	return size;
 }
 	
-uint32_t buffer_cache_read(struct inode *inode, off_t offset, void *buffer_, int size) {
+uint32_t buffer_cache_read(struct inode *inode, off_t offset,
+													 void *buffer_, int size) 
+{
 	struct bfc_entry *bfce;
 	const uint8_t *buffer = buffer_;
 	int sector_ofs = offset % DISK_SECTOR_SIZE;
 
 	bfce = buffer_cache_look_up(inode, offset);
 
-	if(bfce==NULL) {
+	if (bfce == NULL) {
 		bfce = buffer_cache_get_entry(inode, offset);
-		if(bfce==NULL) 
+		if (bfce == NULL) 
 			thread_exit();
 	}	
 
-	//lock_acquire(&bfce->lock);
+	lock_acquire(&bfce->lock);
 	// buffer_는 오프셋까지 고려된 위치, size는 inode_read_at에서 계산된 chunk size.
 	bfce->num_of_accessor++;
-	memcpy(buffer_, bfce->addr + sector_ofs, size);
+	memcpy(buffer, bfce->addr + sector_ofs, size);
 	bfce->accessed = true;
-	//lock_release(&bfce->lock);
+	bfce->num_of_accessor--;
+	lock_release(&bfce->lock);
+
+#ifdef BFC_DEBUG
+	printf("MEMCPY for read: inode=%x, ofs=%d\n", inode, offset);
+#endif
 
 	/* read-ahead 정책을 위해 DISK_SECTOR_SIZE만큼 offset을 증가시키고
 	   해당 부분의 버퍼 캐시를 찾는다. */
 	offset += DISK_SECTOR_SIZE;
 	bfce = buffer_cache_look_up(inode, offset);
 
-	if(bfce==NULL) 
+	if (bfce == NULL) 
 		bfce = buffer_cache_get_entry(inode, offset);
+#ifdef BFC_DEBUG
+	printf("READ-AHEAD: inode=%x, ofs=%d\n", inode, offset);
+#endif
 
 	return size;
 }

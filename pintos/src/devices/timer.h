@@ -3,11 +3,13 @@
 
 #include <round.h>
 #include <stdint.h>
+#include "threads/init.h"
 #include "lib/kernel/list.h"
 
 /* Number of timer interrupts per second. */
 #define TIMER_FREQ 100
 
+extern bool is_init_bfc;
 
 void timer_init (void);
 void timer_calibrate (void);

@@ -225,15 +225,16 @@ disk_read (struct disk *d, disk_sector_t sec_no, void *buffer)
   ASSERT (buffer != NULL);
 
   c = d->channel;
-  lock_acquire (&c->lock);
+
+	lock_acquire (&c->lock);
   select_sector (d, sec_no);
   issue_pio_command (c, CMD_READ_SECTOR_RETRY);
-  sema_down (&c->completion_wait);
+	sema_down (&c->completion_wait);
   if (!wait_while_busy (d))
     PANIC ("%s: disk read failed, sector=%"PRDSNu, d->name, sec_no);
   input_sector (c, buffer);
   d->read_cnt++;
-  lock_release (&c->lock);
+	lock_release (&c->lock);
 }
 
 /* Write sector SEC_NO to disk D from BUFFER, which must contain
@@ -250,15 +251,16 @@ disk_write (struct disk *d, disk_sector_t sec_no, const void *buffer)
   ASSERT (buffer != NULL);
 
   c = d->channel;
-  lock_acquire (&c->lock);
+
+	lock_acquire (&c->lock);
   select_sector (d, sec_no);
   issue_pio_command (c, CMD_WRITE_SECTOR_RETRY);
   if (!wait_while_busy (d))
     PANIC ("%s: disk write failed, sector=%"PRDSNu, d->name, sec_no);
   output_sector (c, buffer);
-  sema_down (&c->completion_wait);
+	sema_down (&c->completion_wait);
   d->write_cnt++;
-  lock_release (&c->lock);
+	lock_release (&c->lock);
 }
 
 /* Disk detection and identification. */
