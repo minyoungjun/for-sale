@@ -9,6 +9,7 @@
 #include "threads/thread.h"
 #include "threads/malloc.h"
 #include "lib/kernel/list.h"
+#include "filesys/buf_cache.h"
   
 /* See [8254] for hardware details of the 8254 timer chip. */
 
@@ -204,7 +205,8 @@ timer_interrupt (struct intr_frame *args UNUSED)
 {
   ticks++;
 	check_unblockable();  /* unblock 될수있는 스레드가 있는지 검사 */
-  thread_tick ();
+	  //check_buffer_cache();
+	thread_tick ();
 }
 
 /* Returns true if LOOPS iterations waits for more than one timer

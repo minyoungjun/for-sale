@@ -18,4 +18,5 @@ extern bool power_off_when_done;
 void power_off (void) NO_RETURN;
 void reboot (void);
 
+
 #endif /* threads/init.h */

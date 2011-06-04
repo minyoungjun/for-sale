@@ -1,4 +1,5 @@
 #include "filesys/filesys.h"
+#include "filesys/buf_cache.h"
 #include <debug.h>
 #include <stdio.h>
 #include <string.h>
@@ -37,6 +38,8 @@ void
 filesys_done (void) 
 {
   free_map_close ();
+	buffer_cache_write_behind_all();
+	buffer_cache_flush();
 }
 
 /* Creates a file named NAME with the given INITIAL_SIZE
