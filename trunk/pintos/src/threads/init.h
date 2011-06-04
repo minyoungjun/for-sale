@@ -6,6 +6,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+bool is_init_bfc;
+
 /* Physical memory size, in 4kB pages. */
 extern size_t ram_pages;
 

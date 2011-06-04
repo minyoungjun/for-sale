@@ -114,6 +114,8 @@ inode_open (disk_sector_t sector)
 {
   struct list_elem *e;
   struct inode *inode;
+	struct bfc_entry *bfce;
+	off_t offset;
 
   /* Check whether this inode is already open. */
   for (e = list_begin (&open_inodes); e != list_end (&open_inodes);
@@ -138,7 +140,8 @@ inode_open (disk_sector_t sector)
   inode->open_cnt = 1;
   inode->deny_write_cnt = 0;
   inode->removed = false;
-  disk_read (filesys_disk, inode->sector, &inode->data);
+	disk_read (filesys_disk, inode->sector, &inode->data);
+
   return inode;
 }
 
@@ -171,6 +174,9 @@ inode_close (struct inode *inode)
   /* Release resources if that was the last opener. */
   if (--inode->open_cnt == 0)
     {
+			// inode를 지우기전에 dirty라면 write-behind
+			buffer_cache_write_behind_inode(inode);
+
       /* Remove from inode list and release lock. */
       list_remove (&inode->elem);
  
