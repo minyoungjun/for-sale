@@ -205,8 +205,9 @@ process_exit (void)
 */
 
 #ifdef VM
-	raFTable(thread_current());
-	destroyST();
+	frame_table_rmf(thread_current());
+	mf_table_destroy();
+	supplemental_table_destroy();
 #endif
 
   /* Destroys the current process's page directory and switch back

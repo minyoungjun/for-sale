@@ -140,6 +140,7 @@ page_fault (struct intr_frame *f)
 	struct page *page;
 	struct thread *t;
 	void *faulted_page;
+	uint32_t dif;
 	bool conti;
 #endif
 
@@ -173,9 +174,9 @@ page_fault (struct intr_frame *f)
 
 	if (not_present && fault_addr < PHYS_BASE) {
 		faulted_page = pg_round_down(fault_addr);
-		page = scanST(faulted_page);
+		page = supplemental_table_look_up(faulted_page);
 		if (page != NULL) { //faulted_page가 이 스레드의 sup_page_table에 있을때
-			loadpageST(page);  //그 테이블에서 load
+			supplemental_table_load_page(page);  //그 테이블에서 load
 			conti = true;
 		}
 

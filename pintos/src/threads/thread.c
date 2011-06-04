@@ -536,7 +536,11 @@ init_thread (struct thread *t, const char *name, int priority)
 	//Supplemental Page Table 초기화
 	list_init(&t->sup_page_table);
 	lock_init(&t->lock_spt);
+	//Mapped file 관련 초기화
+	t->mmid = 0;
+	list_init(&t->mf_table);
 	t->max_code_seg_addr = 0;
+	
 	sema_init(&t->sema_pf, 1);
 #endif	
 

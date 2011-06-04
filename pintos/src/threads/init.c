@@ -1,5 +1,3 @@
-//test
-
 #include "threads/init.h"
 #include <console.h>
 #include <debug.h>
@@ -41,6 +39,7 @@
 #include "devices/disk.h"
 #include "filesys/filesys.h"
 #include "filesys/fsutil.h"
+#include "filesys/buf_cache.h"
 #endif
 
 /* Amount of physical memory, in 4 kB pages. */
@@ -71,6 +70,7 @@ static void usage (void);
 static void print_stats (void);
 
 
+
 int main (void) NO_RETURN;
 
 /* PintOS main program. */
@@ -89,7 +89,7 @@ main (void)
 
 	// Frame Table 초기화
 #ifdef VM
-	initFTable();
+	frame_table_init();
 #endif
 
 	/* Break command line into arguments and parse options. */
@@ -133,6 +133,7 @@ main (void)
 #ifdef FILESYS
   /* Initialize file system. */
   disk_init ();
+	init_buffer_cache();
   filesys_init (format_filesys);
 #endif
 
