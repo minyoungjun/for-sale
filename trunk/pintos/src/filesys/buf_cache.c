@@ -167,14 +167,6 @@ struct bfc_entry *buffer_cache_look_up (struct inode *inode, off_t offset)
 			 e = list_next(e)) {
     cur = list_entry(e, struct bfc_entry, elem);
     if (cur->inode == inode && cur->offset == offset) {
-			/*if (cur->dirty)
-				buffer_cache_write_behind(cur);
-			
-			lock_acquire(&cur->lock);
-			sector_idx = byte_to_sector(inode, offset);
-      disk_read(filesys_disk, sector_idx, cur->addr);
-			lock_release(&cur->lock);*/
-
 			lock_release(&bfc_lock);
 #ifdef BFC_DEBUG
 			printf("LOOK UP Success: inode=%x, ofs=%d\n", cur->inode, cur->offset);
