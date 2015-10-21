@@ -1,0 +1,3 @@
+- TODO 표시 해둔 주석 없애기
+- 동기화
+- 가능하다면 process 관련 syscall도 구현
